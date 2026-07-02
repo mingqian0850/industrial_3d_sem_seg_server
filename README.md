@@ -23,12 +23,13 @@ Dockerfile
 
 ## 1. Build the image
 
-Requires the training base image `pointcept/pointcept:ditr-pytorch2.5.0-cuda12.4`
-to be available locally (or pullable from your registry).
-
 ```bash
 docker build -t industrial-seg-server:ditr-v0.1 .
 ```
+
+The base image (`pointcept/pointcept:v1.6.0-...`, public on Docker Hub) is
+pulled automatically on first build; the DITR-specific packages are
+installed on top by the Dockerfile itself.
 
 The build pins the DITR code to the training commit and bakes the frozen
 DINOv2-small weights into the image, so the container needs no internet at

@@ -1,7 +1,15 @@
 # Deployment image for the DITR industrial 3D semantic segmentation server.
-# Based on the training image so all compiled deps (spconv, flash-attn,
-# pointops) are guaranteed to match the checkpoint.
-FROM pointcept/pointcept:ditr-pytorch2.5.0-cuda12.4
+# Based on the official Pointcept image (public on Docker Hub, pulled
+# automatically) so all compiled deps (spconv, flash-attn, pointops) match
+# the checkpoint. The DITR additions below mirror the training image
+# (ws_Pointcept/Dockerfile.ditr).
+FROM pointcept/pointcept:v1.6.0-pytorch2.5.0-cuda12.4-cudnn9-devel
+
+RUN pip install --no-cache-dir \
+    sharedarray \
+    imageio \
+    albumentations==1.4.21 \
+    "yapf<0.40.2"
 
 ARG DITR_REPO=https://github.com/mingqian0850/ditr.git
 ARG DITR_COMMIT=f66d1dadb82e97ded7750567a043e4783305b01c

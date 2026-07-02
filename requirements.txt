@@ -1,8 +1,6 @@
 # Server-layer dependencies only.
 # torch / spconv / flash-attn / pointops / timm / albumentations etc. are
-# provided by the base image (pointcept/pointcept:ditr-pytorch2.5.0-cuda12.4).
+# provided by the base image layers (see Dockerfile).
 fastapi>=0.115
 uvicorn[standard]>=0.30
 huggingface_hub>=0.30
-# pulled in by pointcept.datasets import chain but absent from the base image
-imageio
