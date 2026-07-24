@@ -12,6 +12,8 @@ MODEL_DIR="${MODEL_DIR:-${ROOT_DIR}/models/ditr-industrial-aligned-23cls}"
 HF_MODEL_REPO="${HF_MODEL_REPO:-min99ian/ditr-industrial-aligned-23cls}"
 MAX_VALID_POINTS="${MAX_VALID_POINTS:-350000}"
 
+REQUIRE_GPU=1 "${ROOT_DIR}/deploy_scripts/check_host.sh"
+
 if ! [[ "${GPU_DEVICE}" =~ ^[0-9]+$ ]]; then
   echo "[ERROR] GPU_DEVICE must be a non-negative GPU index."
   exit 2

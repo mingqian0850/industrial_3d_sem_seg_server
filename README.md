@@ -26,28 +26,58 @@ The service and model have been functionally validated on an NVIDIA A40 with
 CUDA 12.4. RTX 4070/4080 use the same Ada CUDA architecture, but throughput and
 maximum scene size should be benchmarked on the target device.
 
-Prerequisites:
+## Host prerequisites
 
-- NVIDIA driver 550 or newer
-- Docker 24 or newer
-- NVIDIA Container Toolkit configured for Docker
+Install once on every machine before build/start:
+
+- Linux x86_64
+- NVIDIA driver 550 or newer (`nvidia-smi` works)
+- Docker Engine 24 or newer, with the daemon running
+- current user in the `docker` group (or equivalent access to `/var/run/docker.sock`)
+- NVIDIA Container Toolkit configured for Docker (`docker run --gpus ...`)
 - about 25 GB of free disk space
 - network access to GitHub, Docker Hub, timm model storage, and Hugging Face
   during the initial build/start
 
-Verify the GPU runtime:
+No host Python/Conda environment is required.
+
+### One-time host setup
+
+```bash
+git clone https://github.com/mingqian0850/industrial_3d_sem_seg_server.git
+cd industrial_3d_sem_seg_server
+git switch ditr
+
+# Check only
+./deploy_scripts/check_host.sh
+
+# On Ubuntu/Debian, attempt to repair common gaps (needs sudo):
+# - add current user to the docker group
+# - install/configure NVIDIA Container Toolkit
+FIX=1 ./deploy_scripts/check_host.sh
+```
+
+If the script adds you to the `docker` group, activate it before continuing:
+
+```bash
+newgrp docker
+# or log out and back in
+./deploy_scripts/check_host.sh
+```
+
+Manual smoke test (optional; `check_host.sh` already covers this):
 
 ```bash
 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
+`build_api.sh` and `start_api.sh` call `check_host.sh` automatically so missing
+host dependencies fail early with actionable messages.
+
 ## Build
 
 ```bash
-git clone https://github.com/mingqian0850/industrial_3d_sem_seg_server.git
-cd industrial_3d_sem_seg_server
-git switch ditr
 ./deploy_scripts/build_api.sh
 ```
 
@@ -148,6 +178,8 @@ Useful overrides:
 | `MODEL_DIR` | `./models/ditr-industrial-aligned-23cls` | Model cache |
 | `HF_MODEL_REPO` | `min99ian/ditr-industrial-aligned-23cls` | HF model ID |
 | `MAX_VALID_POINTS` | `350000` | Request safety limit |
+| `FIX` | `0` | `1` lets `check_host.sh` install/repair host deps |
+| `REQUIRE_GPU` | `1` (`0` during build) | Skip GPU / `--gpus` checks when `0` |
 
 ## Model integrity
 
@@ -185,15 +217,19 @@ All arrays align with valid depth pixels in row-major order.
 
 ## Troubleshooting
 
-- `could not select device driver`: install or configure NVIDIA Container
-  Toolkit, then restart Docker.
+- `permission denied ... docker.sock`: add the user to the `docker` group
+  (`FIX=1 ./deploy_scripts/check_host.sh`, then `newgrp docker`).
+- `could not select device driver` / empty GPU capabilities: install and
+  configure NVIDIA Container Toolkit
+  (`FIX=1 ./deploy_scripts/check_host.sh`), then restart Docker.
 - CUDA out of memory: lower `MAX_VALID_POINTS` and capture resolution.
 - model download fails: check `HF_MODEL_REPO`, network access, and `HF_TOKEN`
-  for a private repository.
+  for a private repository. The entrypoint uses the Hugging Face Python API
+  (`snapshot_download`), so a host `hf` CLI is not required.
 - build fails while downloading DINOv2: verify outbound network access and
   rebuild; the completed image does not need that download at startup.
 - health remains `starting`: inspect `./deploy_scripts/logs_api.sh`; initial
-  model loading can take several minutes.
-
-No host Python/Conda installation and no sudo access are required after Docker
-and the NVIDIA runtime are configured.
+  model loading can take several minutes. Rebuild if the image predates the
+  portable `HEALTHCHECK` in `Dockerfile`.
+- after changing `docker/entrypoint.sh` or `Dockerfile`: rebuild with
+  `./deploy_scripts/build_api.sh` before restarting.

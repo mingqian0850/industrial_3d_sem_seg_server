@@ -55,5 +55,8 @@ ENV MODEL_DIR=/models/ditr-industrial-aligned-23cls \
     MAX_VALID_POINTS=350000 \
     PORT=8000
 
+HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()"
+
 EXPOSE 8000
 ENTRYPOINT ["entrypoint.sh"]
