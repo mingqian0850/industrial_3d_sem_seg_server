@@ -37,13 +37,22 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ app/
+COPY tests/ tests/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh && mkdir -p /models && chmod a+rwX /models
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+    && mkdir -p /models/ditr-industrial-aligned-23cls \
+    && chmod a+rwX /models/ditr-industrial-aligned-23cls \
+    && python -m unittest discover -s tests -v
 
 # Where the checkpoint + config live at runtime; if the directory is empty
 # the entrypoint downloads HF_MODEL_REPO into it first.
-ENV MODEL_DIR=/models/ditr-industrial \
-    HF_MODEL_REPO=min99ian/ditr-industrial \
+ENV MODEL_DIR=/models/ditr-industrial-aligned-23cls \
+    HF_MODEL_REPO=min99ian/ditr-industrial-aligned-23cls \
+    MODEL_CONFIG=/models/ditr-industrial-aligned-23cls/config.py \
+    MODEL_WEIGHT=/models/ditr-industrial-aligned-23cls/ditr-industrial-aligned-23cls.pth \
+    MODEL_DEVICE=cuda \
+    HOST_GPU_INDEX=0 \
+    MAX_VALID_POINTS=350000 \
     PORT=8000
 
 EXPOSE 8000

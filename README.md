@@ -1,180 +1,199 @@
-# industrial_3d_sem_seg_server
+# IN3D DiTR FastAPI server
 
-Inference server for industrial 3D semantic segmentation (23 classes).
-This branch (`ditr`) serves the DITR model (PT-v3 + frozen DINOv2-small
-feature injection), weights hosted at
-[min99ian/ditr-industrial](https://huggingface.co/min99ian/ditr-industrial).
+DiTR combines PTv3 with frozen DINOv2-small image features for industrial
+RGB-D semantic segmentation. This repository provides a reproducible Docker
+deployment for the Isaac client `isaac-capture.v1` contract.
 
-The server exposes a FastAPI HTTP endpoint and a WebSocket endpoint with a
-simple binary protocol, so clients can be written in any language (Python,
-C++, ROS 2 node, ...) without depending on the model environment.
+The image pins the DiTR implementation used for training and caches the
+DINOv2-small backbone during the build. The aligned 23-class config and task
+checkpoint are downloaded at first startup from
+[`min99ian/ditr-industrial-aligned-23cls`](https://huggingface.co/min99ian/ditr-industrial-aligned-23cls).
 
-```
-app/
-├── main.py        FastAPI app: /health, /metadata, POST /segment, WS /ws/segment
-├── inference.py   model loading + preprocessing + prediction
-└── protocol.py    binary request/response encoding
-clients/
-└── python_client.py   example client (numpy + requests only)
-docker/
-└── entrypoint.sh  downloads weights from HF if missing, starts uvicorn
-Dockerfile
-```
+## Target hardware
 
-## 1. Build the image
+The container targets Linux x86_64 systems with NVIDIA Ada GPUs:
 
-```bash
-docker build -t industrial-seg-server:ditr-v0.1 .
-```
+| GPU | VRAM | Starting `MAX_VALID_POINTS` | Recommended capture |
+|---|---:|---:|---|
+| RTX 4070 / 4070 Super | 12 GB | `350000` | up to 640 × 480 |
+| RTX 4070 Ti Super / RTX 4080 | 16 GB | `450000` | 640 × 480; increase gradually |
 
-The base image (`pointcept/pointcept:v1.6.0-...`, public on Docker Hub) is
-pulled automatically on first build; the DITR-specific packages are
-installed on top by the Dockerfile itself.
+These are conservative starting profiles, not fixed model limits. Actual
+memory use depends on valid depth count and voxel density. Lower the limit or
+capture resolution if CUDA reports out-of-memory.
 
-The build pins the DITR code to the training commit and bakes the frozen
-DINOv2-small weights into the image, so the container needs no internet at
-runtime (except for the one-time model download, see below).
+The service and model have been functionally validated on an NVIDIA A40 with
+CUDA 12.4. RTX 4070/4080 use the same Ada CUDA architecture, but throughput and
+maximum scene size should be benchmarked on the target device.
 
-## 2. Distribute / pull the image
+Prerequisites:
 
-Push to a registry (recommended):
+- NVIDIA driver 550 or newer
+- Docker 24 or newer
+- NVIDIA Container Toolkit configured for Docker
+- about 25 GB of free disk space
+- network access to GitHub, Docker Hub, timm model storage, and Hugging Face
+  during the initial build/start
+
+Verify the GPU runtime:
 
 ```bash
-docker tag industrial-seg-server:ditr-v0.1 <registry>/<user>/industrial-seg-server:ditr-v0.1
-docker push <registry>/<user>/industrial-seg-server:ditr-v0.1
-
-# on the target machine
-docker pull <registry>/<user>/industrial-seg-server:ditr-v0.1
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Or transfer as a file (no registry needed):
+## Build
 
 ```bash
-docker save industrial-seg-server:ditr-v0.1 | gzip > industrial-seg-server.tar.gz
-# on the target machine
-docker load < industrial-seg-server.tar.gz
+git clone https://github.com/mingqian0850/industrial_3d_sem_seg_server.git
+cd industrial_3d_sem_seg_server
+git switch ditr
+./deploy_scripts/build_api.sh
 ```
 
-## 3. Run the server
+The portable build uses:
 
-The target machine needs an NVIDIA GPU, driver, and the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- `pointcept/pointcept:v1.6.0-pytorch2.5.0-cuda12.4-cudnn9-devel`
+- DiTR commit `f66d1dadb82e97ded7750567a043e4783305b01c`
+- `vit_small_patch14_reg4_dinov2` from timm
 
-Model weights are downloaded from Hugging Face on first start and cached in
-the `seg-models` volume:
+On the original training server only, an existing
+`industrial-seg-server:ditr-v0.1` image can be reused:
 
 ```bash
-docker run -d --name seg-server --gpus '"device=0"' \
-  -p 8000:8000 \
-  -v seg-models:/models \
-  industrial-seg-server:ditr-v0.1
+DOCKERFILE=Dockerfile.runtime ./deploy_scripts/build_api.sh
 ```
 
-If the HF repo is private, add `-e HF_TOKEN=hf_xxx`. To use local weights
-instead of downloading, mount a directory containing `config.py` and the
-`.pth` file:
+Other machines should use the default portable `Dockerfile`.
+
+## Start on an RTX 4070
+
+The default service is bound to localhost:
 
 ```bash
-docker run -d --name seg-server --gpus '"device=0"' \
-  -p 8000:8000 \
-  -v /path/to/ditr-industrial-23cls:/models/ditr-industrial:ro \
-  industrial-seg-server:ditr-v0.1
+GPU_DEVICE=0 \
+MAX_VALID_POINTS=350000 \
+./deploy_scripts/start_api.sh
 ```
 
-Environment variables:
+## Start on an RTX 4080
 
-| Variable | Default | Meaning |
+```bash
+GPU_DEVICE=0 \
+MAX_VALID_POINTS=450000 \
+./deploy_scripts/start_api.sh
+```
+
+To accept requests from another machine, bind to a private LAN or VPN address:
+
+```bash
+BIND_ADDRESS=192.168.1.50 \
+GPU_DEVICE=0 \
+HOST_PORT=8011 \
+MAX_VALID_POINTS=350000 \
+./deploy_scripts/start_api.sh
+```
+
+For a multi-GPU host, select the intended physical GPU explicitly, for example
+`GPU_DEVICE=1`. Only that GPU is visible inside the container.
+
+At first startup the container downloads:
+
+- `config.py`
+- `ditr-industrial-aligned-23cls.pth`
+
+into `models/ditr-industrial-aligned-23cls/`. The checkpoint contains only the
+trained task `state_dict`; optimizer and scheduler state were removed. Frozen
+DINOv2 weights are supplied by the image.
+
+If the model repository is private, export a read token:
+
+```bash
+export HF_TOKEN=hf_your_read_token
+./deploy_scripts/start_api.sh
+```
+
+Never commit tokens to Git, Dockerfiles, or shell scripts.
+
+## Client settings
+
+- scheme: `http`
+- host: target machine's private address
+- port: `8011`
+- health path: `/health`
+- inference path: `/v1/infer`
+
+PTv3 conventionally uses port `8010`. Both services use the same client
+contract, so changing the port switches the inference model.
+
+## Operations
+
+```bash
+./deploy_scripts/status_api.sh
+./deploy_scripts/logs_api.sh
+./deploy_scripts/stop_api.sh
+```
+
+The container uses `--restart unless-stopped`; no tmux session is needed.
+
+Useful overrides:
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `MODEL_DIR` | `/models/ditr-industrial` | directory with `config.py` + one `.pth` |
-| `HF_MODEL_REPO` | `min99ian/ditr-industrial` | HF repo to download if `MODEL_DIR` is empty |
-| `HF_TOKEN` | – | HF access token for private repos |
-| `PORT` | `8000` | server port |
+| `IMAGE` | `in3d-ditr-api:<user>` | Docker image |
+| `CONTAINER_NAME` | `in3d-ditr-api-<user>` | Container name |
+| `GPU_DEVICE` | `0` | Physical host GPU index |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface |
+| `HOST_PORT` | `8011` | Host port |
+| `MODEL_DIR` | `./models/ditr-industrial-aligned-23cls` | Model cache |
+| `HF_MODEL_REPO` | `min99ian/ditr-industrial-aligned-23cls` | HF model ID |
+| `MAX_VALID_POINTS` | `350000` | Request safety limit |
 
-Check it is up:
+## Model integrity
 
-```bash
-curl http://localhost:8000/health
-# {"status":"ok","model_loaded":true}
-curl http://localhost:8000/metadata   # class names + protocol description
+Expected SHA-256 values:
+
+```text
+0f29a5ea17f8ff06beace23628f55afce9d73fe85f99fa6d8afc9cd08388a61e  ditr-industrial-aligned-23cls.pth
+36cb0d2f6bf5c45aa2861453b21f30b14b77ada65ef44d9d505c4520c59922c7  config.py
 ```
 
-## 4. API
+Verify after download:
 
-### Endpoints
+```bash
+sha256sum models/ditr-industrial-aligned-23cls/ditr-industrial-aligned-23cls.pth
+sha256sum models/ditr-industrial-aligned-23cls/config.py
+```
+
+## API
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | liveness probe |
-| GET | `/metadata` | model name, class names, array layout (JSON) |
-| POST | `/segment` | one frame per request, binary body, binary response |
-| WS | `/ws/segment` | persistent connection; one binary message per frame |
+| `GET` | `/health` | Health, model, GPU and class metadata |
+| `GET` | `/metadata` | Request/response contract metadata |
+| `POST` | `/v1/infer` | Isaac multipart capture request; NPZ response |
+| `POST` | `/segment` | Legacy DiTR binary request |
+| `WS` | `/ws/segment` | Legacy DiTR WebSocket |
 
-HTTP is the simplest integration; use the WebSocket for continuous streams
-(sensor feeds) to avoid per-request connection overhead. Both use the same
-frame format.
+`/v1/infer` returns:
 
-### Binary frame format
+- `prediction`: client-registry class ID for each valid depth point
+- `model_prediction`: native DiTR class ID
+- `confidence`: maximum softmax probability
 
-Point clouds are far too large for JSON, so requests/responses are raw
-little-endian binary:
+All arrays align with valid depth pixels in row-major order.
 
-```
-[4 bytes]  uint32 LE: length L of the JSON header
-[L bytes]  UTF-8 JSON header
-[...]      raw arrays, concatenated in fixed order (C order, little-endian)
-```
+## Troubleshooting
 
-Request header:
+- `could not select device driver`: install or configure NVIDIA Container
+  Toolkit, then restart Docker.
+- CUDA out of memory: lower `MAX_VALID_POINTS` and capture resolution.
+- model download fails: check `HF_MODEL_REPO`, network access, and `HF_TOKEN`
+  for a private repository.
+- build fails while downloading DINOv2: verify outbound network access and
+  rebuild; the completed image does not need that download at startup.
+- health remains `starting`: inspect `./deploy_scripts/logs_api.sh`; initial
+  model loading can take several minutes.
 
-```json
-{"version": 1, "num_points": N, "image_height": H, "image_width": W}
-```
-
-Request arrays, in this exact order:
-
-| Array | dtype | shape | Notes |
-|---|---|---|---|
-| `coord` | float32 | (N, 3) | point coordinates, meters |
-| `color` | uint8 | (N, 3) | RGB 0–255 |
-| `normal` | float32 | (N, 3) | unit normals |
-| `image` | uint8 | (H, W, 3) | RGB camera image of the same frame |
-| `image_coord` | float32 | (N, 2) | per-point pixel coordinate (x, y) in `image` |
-| `image_mask` | uint8 | (N,) | 1 if the point projects into the image |
-
-Note: DITR injects DINOv2 image features into the point backbone, so the
-camera image and the point-to-pixel projection are required inputs, not
-optional extras. Points outside the camera frustum are allowed —
-set their `image_mask` to 0.
-
-Response header: `{"version": 1, "num_points": N}`, followed by:
-
-| Array | dtype | shape | Notes |
-|---|---|---|---|
-| `labels` | uint8 | (N,) | class index per input point (see `/metadata`) |
-| `confidence` | float32 | (N,) | softmax probability of the predicted class |
-
-### Example client
-
-`clients/python_client.py` implements the protocol with plain numpy
-(no torch) and works against a folder-per-sample frame directory:
-
-```bash
-pip install numpy requests websockets
-
-python clients/python_client.py http http://localhost:8000 /path/to/frame_dir
-python clients/python_client.py ws   http://localhost:8000 /path/to/frame_dir
-```
-
-Porting to other languages only requires: build the JSON header, memcpy the
-arrays in order, HTTP POST (or WS send), parse the response the same way.
-
-## Notes
-
-- Preprocessing (image resize/normalize, 0.02 m grid sampling, color
-  normalization) runs server-side and mirrors the training config; clients
-  send raw per-point data only. Voxel predictions are mapped back to all N
-  input points, so the response aligns 1:1 with the request arrays.
-- Requests are serialized through a single GPU lock; concurrent clients are
-  handled but share one GPU queue.
-- Model/image versioning: tag images as `ditr-vX.Y` and record the HF
-  weight revision here when releasing.
+No host Python/Conda installation and no sudo access are required after Docker
+and the NVIDIA runtime are configured.
